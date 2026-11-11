@@ -43,8 +43,22 @@ PSP_MODULE_INFO(MODULE_NAME, PSP_MODULE_KERNEL, 1, 0);
  *   2. if the hash is changed, extract the theme file to PLUGIN_HOME/active_theme
  *   3. use ms0:/PSP/PLUGINS/ppsspp_simple_ctf_loader/active_theme as an overlay
  *   - makes very good use of the fact that PPSSPP ignore kernel/user boundary, beware when studying this for console plugins
- *   - were there themes that actually shipped prx? it is certainly not hooked here yet
  */
+
+bool is_file(const char *path){
+	SceIoStat file_stat = {0};
+	int get_stat_status = sceIoGetstat(path, &file_stat);
+
+	if (get_stat_status < 0){
+		return false;
+	}
+
+	if (FIO_S_ISDIR(file_stat.st_mode)){
+		return false;
+	}
+
+	return true;
+}
 
 void overlay(const char *path, char *out_path){
 	char path_lowered[256] = {0};
@@ -70,14 +84,7 @@ void overlay(const char *path, char *out_path){
 
 	char possible_path[256] = {0};
 	sprintf(possible_path, "%s/%s", THEME_DIR, &path[8]);
-	SceIoStat file_stat = {0};
-	int get_stat_status = sceIoGetstat(possible_path, &file_stat);
-	if (get_stat_status < 0){
-		strcpy(out_path, path);
-		return;
-	}
-
-	if (FIO_S_ISDIR(file_stat.st_mode)){
+	if (!is_file(possible_path)){
 		strcpy(out_path, path);
 		return;
 	}
@@ -122,6 +129,7 @@ bool rewrite_import_table_by_nid(char *module_name, char *library_name, uint32_t
 					nid[0] = 0;
 					stub[0] = make_jump_instruction(function);
 					stub[1] = 0; // nop
+					LOG("%s: hooking %s 's %s 0x%lx", __func__, module_name, library_name, target_nid);
 					return true;
 				}
 			}
@@ -130,13 +138,38 @@ bool rewrite_import_table_by_nid(char *module_name, char *library_name, uint32_t
 		library = (SceLibraryStubTable *)((uint32_t)library + library->len * 4);
 	}
 
-	LOG("%s: module %s did not import %s 0x%lx\n", __func__, module_name, library_name, target_nid);
+	//LOG("%s: module %s did not import %s 0x%lx\n", __func__, module_name, library_name, target_nid);
 
 	return false;
 
 }
 
-void hook(){
+SceUID sceKernelLoadModule_hooked(const char *path, int flags, SceKernelLMOption *option){
+	char overlay_path[256] = {0};
+	overlay(path, overlay_path);
+	return sceKernelLoadModule(overlay_path, flags, option);
+}
+
+SceUID sceKernelLoadModuleVSH_hooked(const char *path, int flags, SceKernelLMOption *option){
+	char overlay_path[256] = {0};
+	overlay(path, overlay_path);
+	return sceKernelLoadModule(overlay_path, flags, option);
+}
+
+void hook(char *mod_name){
+	rewrite_import_table_by_nid(mod_name, "IoFileMgrForUser", 0x109F50BC, sceIoOpen_hooked);
+	rewrite_import_table_by_nid(mod_name, "IoFileMgrForUser", 0xACE946E8, sceIoGetstat_hooked);
+	rewrite_import_table_by_nid(mod_name, "ModuleMgrForUser", 0x977DE386, sceKernelLoadModule_hooked);
+	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0xD5DDAB1F, sceKernelLoadModuleVSH_hooked);
+	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0xA4370E7C, sceKernelLoadModuleVSH_hooked);
+	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0xCCDE84A8, sceKernelLoadModuleVSH_hooked);
+	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0xFE586962, sceKernelLoadModuleVSH_hooked);
+	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0x329C89DB, sceKernelLoadModuleVSH_hooked);
+	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0x8909A807, sceKernelLoadModuleVSH_hooked);
+	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0xBDFEEC4F, sceKernelLoadModuleVSH_hooked);
+}
+
+void initial_hook(){
 	SceUID mod_ids[256] = {0};
 	int num_mods = 0;
 	sceKernelGetModuleIdList(mod_ids, ARRAY_SIZE(mod_ids), &num_mods);
@@ -150,24 +183,9 @@ void hook(){
 			continue;
 		}
 		LOG("%s: hooking %s\n", __func__, mod_name);
-		rewrite_import_table_by_nid(mod_name, "IoFileMgrForUser", 0x109F50BC, sceIoOpen_hooked);
-		rewrite_import_table_by_nid(mod_name, "IoFileMgrForUser", 0xACE946E8, sceIoGetstat_hooked);
+		hook(mod_name);
 	}
 }
-
-struct replace_entry{
-	char name[64];
-	unsigned int start;
-	unsigned int size;
-} __attribute__((packed));
-
-struct ctf_header{
-	uint8_t unk[0x10];
-	uint32_t magic;
-	uint32_t ctf_sig;
-	uint32_t header_size;
-
-} __attribute__((packed));
 
 bool rm_recursive(const char *file){
 	SceIoStat file_stat;
@@ -241,6 +259,19 @@ void dirname(const char *path, char *out){
 	out[last_slash] = '\0';
 	return;
 }
+
+struct replace_entry{
+	char name[64];
+	unsigned int start;
+	unsigned int size;
+} __attribute__((packed));
+
+struct ctf_header{
+	uint8_t unk[0x10];
+	uint32_t magic;
+	uint32_t ctf_sig;
+	uint32_t header_size;
+} __attribute__((packed));
 
 bool extract_ctf(){
 	int ctf_fd = sceIoOpen(THEME_FILE, PSP_O_RDONLY, 0777);
@@ -321,6 +352,11 @@ bool extract_ctf(){
 	return true;
 }
 
+struct module_replacement{
+	const char *library_name;
+	const char *replacement_path;
+};
+
 int module_start(SceSize args, void *argp){
 	#if DEBUG_LOG
 	sceIoRemove(LOG_PATH);
@@ -329,7 +365,7 @@ int module_start(SceSize args, void *argp){
 
 	extract_ctf();
 
-	hook();
+	initial_hook();
 
 	return 0;
 }
