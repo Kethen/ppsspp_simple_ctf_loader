@@ -18,6 +18,7 @@ This is a port of https://github.com/ErikPshat/cxmb / https://github.com/PSP-Arc
 2. Install firmware compatible ctf themes files to `<PPSSPP memory stick>/PSP/THEME`, note that incompatible themes that supply prx-es and patches to scePaf_Module, sceVshCommonGui_Module and vsh_module would likely cause crashes, no strict checking is done currently when extracting themes, but version is logged to `<PPSSPP memory stick>/PSP/PLUGINS/ppsspp_simple_ctf_loader/log.txt`
 3. Boot XMB and select your theme in `Settings -> Theme Settings -> Theme`
 4. Once a theme is applied, XMB will quit shortly, theme will be applied after launching XMB again
+5. If XMB hangs/crash, the theme is incompatible with your firmware, remove your theme [manually](#manual-theme-removal)
 
 #### Theme removal on FW 5.00+
 
