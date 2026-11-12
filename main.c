@@ -11,6 +11,8 @@
 #include <pspmodulemgr.h>
 #include <pspsysmem.h>
 #include <psputils.h>
+#include <pspthreadman.h>
+#include <psploadexec_kernel.h>
 
 #define MODULE_NAME "ppsspp_simple_ctf_loader"
 #define PLUGIN_HOME "ms0:/PSP/PLUGINS/ppsspp_simple_ctf_loader"
@@ -78,6 +80,17 @@ bool is_file(const char *path){
 	return true;
 }
 
+void to_lower(char *out, const char *in){
+	int len = strlen(in);
+	for (int i = 0;i < len;i++){
+		out[i] = in[i];
+		if (out[i] >= 'A' && out[i] <= 'Z'){
+			out[i] = out[i] + ('a' - 'A');
+		}
+	}
+	out[len] = '\0';
+}
+
 void overlay(const char *path, char *out_path){
 	char path_lowered[256] = {0};
 	int path_len = strlen(path);
@@ -87,13 +100,7 @@ void overlay(const char *path, char *out_path){
 		return;
 	}
 
-	for (int i = 0;i < path_len;i++){
-		path_lowered[i] = path[i];
-		if (path_lowered[i] >= 'A' && path_lowered[i] <= 'Z'){
-			path_lowered[i] = path_lowered[i] + ('a' - 'A');
-		}
-	}
-
+	to_lower(path_lowered, path);
 
 	if (memcmp("flash0:/", path_lowered, 8) != 0){
 		strcpy(out_path, path);
@@ -113,16 +120,203 @@ void overlay(const char *path, char *out_path){
 	return;
 }
 
+SceUID custom_theme_dat_fd = -1;
+char selected_ctf_path[256] = {0};
+
 SceUID sceIoOpen_hooked(const char *file, int flags, SceMode mode){
 	char overlay_path[256] = {0};
 	overlay(file, overlay_path);
-	return sceIoOpen(overlay_path, flags, mode);
+
+	SceUID ret = sceIoOpen(overlay_path, flags, mode);
+
+	//LOG("%s: %s, 0x%x\n", __func__, file, ret);
+
+	if (ret < 0){
+		return ret;
+	}
+
+	if (strcmp(file, "flash1:/vsh/theme/custom_theme.dat") == 0 && flags == (PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC)){
+		custom_theme_dat_fd = ret;
+	}
+
+	return ret;
+}
+
+int vsh_reboot_thread_func(SceSize args, void *argp){
+	sceKernelDelayThread(3650000);
+	LOG("%s: rebooting vsh\n", __func__);
+	sceKernelExitVSHVSH(NULL);
+	return 0;
+}
+
+void schedule_vsh_reboot(){
+	int thread = sceKernelCreateThread("reboot vsh", vsh_reboot_thread_func, 0x60, 1024 * 4, 0, NULL);
+	sceKernelStartThread(thread, 0, NULL);
+}
+
+bool fd_copy(int write_fd, int read_fd, int size){
+	int bytes_written = 0;
+	while(bytes_written < size){
+		static char dump_buf[8192];
+		int rem = size - bytes_written;
+		int to_read = sizeof(dump_buf) > rem ? rem : sizeof(dump_buf);
+		int read_status = sceIoRead(read_fd, dump_buf, to_read);
+		if (read_status != to_read){
+			return false;
+		}
+		int write_status = sceIoWrite(write_fd, dump_buf, read_status);
+		if (write_status != read_status){
+			return false;
+		}
+		bytes_written += read_status;
+	}
+	return true;
+}
+
+bool copy_file(const char *to, const char *from){
+	int read_fd = sceIoOpen(from, PSP_O_RDONLY, 0777);
+	if (read_fd < 0){
+		LOG("%s: failed opening %s for reading while copying\n", __func__, from);
+		return false;
+	}
+	int write_fd = sceIoOpen(to, PSP_O_CREAT | PSP_O_TRUNC | PSP_O_WRONLY, 0777);
+	if (write_fd < 0){
+		LOG("%s: failed opening %s for writing while copying\n", __func__, to);
+		sceIoClose(read_fd);
+		return false;
+	}
+	int size = sceIoLseek(read_fd, 0, PSP_SEEK_END);
+	if (size < 0){
+		LOG("%s: bad size of from file\n", __func__);
+		sceIoClose(write_fd);
+		sceIoClose(read_fd);
+		return false;
+	}
+	sceIoLseek(read_fd, 0, PSP_SEEK_SET);
+	int ret = fd_copy(write_fd, read_fd, size);
+	sceIoClose(write_fd);
+	sceIoClose(read_fd);
+	if (!ret){
+		LOG("%s: failed copying from %s to %s\n", __func__, from, to);
+	}
+	return ret;
+}
+
+int sceIoClose_hooked(int fd){
+	int ret = sceIoClose(fd);
+	if (fd == custom_theme_dat_fd){
+		custom_theme_dat_fd = -1;
+		if(copy_file(THEME_FILE, selected_ctf_path)){
+			schedule_vsh_reboot();
+		}
+	}
+	//LOG("%s: %d\n", __func__, fd);
+	return ret;
 }
 
 int sceIoGetstat_hooked(const char *file, SceIoStat *stat){
 	char overlay_path[256] = {0};
 	overlay(file, overlay_path);
-	return sceIoGetstat(overlay_path, stat);
+	//LOG("%s: %s\n", __func__, file);
+
+	int ret = sceIoGetstat(overlay_path, stat);
+
+	if (ret < 0){
+		return ret;
+	}
+
+	char path_lowered[256] = {0};
+	to_lower(path_lowered, file);
+	int path_len = strlen(path_lowered);
+	if (path_len > 4){
+		if (memcmp(".ctf", &path_lowered[path_len - 4], 4) == 0){
+			strcpy(selected_ctf_path, file);
+			// fake the size
+			int size_from_file = 0;
+			int ctf_fd = sceIoOpen(file, PSP_O_RDONLY, 0777);
+			if (ctf_fd < 0){
+				LOG("%s: failed opening ctf while faking size\n", __func__);
+				return ret;
+			}
+			sceIoLseek(ctf_fd, 0x1c, PSP_SEEK_SET);
+			int read_status = sceIoRead(ctf_fd, &size_from_file, sizeof(size_from_file));
+			if (read_status != sizeof(size_from_file)){
+				LOG("%s: failed reading from ctf while faking size\n", __func__);
+				sceIoClose(ctf_fd);
+				return ret;
+			}
+			sceIoClose(ctf_fd);
+			if (size_from_file > 0){
+				stat->st_size = size_from_file;
+			}else{
+				stat->st_size = 0x00020000;
+			}
+			LOG("%s: faking ctf size as %d\n", __func__, (int)stat->st_size);
+		}
+	}
+
+	return ret;
+}
+
+bool rm_recursive(const char *file){
+	SceIoStat file_stat;
+	int get_stat_status = sceIoGetstat(file, &file_stat);
+	if (get_stat_status < 0){
+		// assume file not found
+		return true;
+	}
+
+	if (!FIO_S_ISDIR(file_stat.st_mode)){
+		int remove_status = sceIoRemove(file);
+		if (remove_status < 0){
+			LOG("%s: failed removing file %s\n", __func__, file);
+			return false;
+		}
+		return true;
+	}
+
+	int dir_fd = sceIoDopen(file);
+	if (dir_fd < 0){
+		// uh, what
+		LOG("%s: failed opening directory %s\n", __func__, file);
+		return false;
+	}
+	SceIoDirent entry;
+	while (sceIoDread(dir_fd, &entry) > 0){
+		if (strcmp(entry.d_name, ".") == 0 || strcmp(entry.d_name, "..") == 0){
+			continue;
+		}
+		char path_buf[1024] = {0};
+		sprintf(path_buf, "%s/%s", file, entry.d_name);
+		bool rm_status = rm_recursive(path_buf);
+		if (!rm_status){
+			sceIoDclose(dir_fd);
+			return false;
+		}
+	}
+
+	sceIoDclose(dir_fd);
+
+	int dir_remove_status = sceIoRmdir(file);
+	if (dir_remove_status < 0){
+		LOG("%s: failed removing directory %s\n", __func__, file);
+		return false;
+	}
+
+	return true;
+}
+
+int sceIoRemove_hooked(const char *file){
+	int ret = sceIoRemove(file);
+
+	if (strcmp("flash1:/vsh/theme/custom_theme.dat", file) == 0){
+		sceIoRemove(THEME_FILE);
+		rm_recursive(THEME_DIR);
+		schedule_vsh_reboot();
+	}
+
+	LOG("%s: %s, 0x%x\n", __func__, file, ret);
+	return ret;
 }
 
 uint32_t make_jump_instruction(void *to){
@@ -162,12 +356,161 @@ bool rewrite_import_table_by_nid(char *module_name, char *library_name, uint32_t
 
 }
 
+int sceKernelUtilsSha1BlockInit_(SceKernelUtilsSha1Context *ctx);
+int sceKernelUtilsSha1BlockUpdate_(SceKernelUtilsSha1Context *ctx, u8 *data, u32 size);
+int sceKernelUtilsSha1BlockResult_(SceKernelUtilsSha1Context *ctx, u8 *digest);
+
+bool hash_file(const char *path, char *digest){
+	SceKernelUtilsSha1Context ctx = {0};
+	sceKernelUtilsSha1BlockInit_(&ctx);
+
+	int read_fd = sceIoOpen(path, PSP_O_RDONLY, 0777);
+	if (read_fd < 0){
+		return false;
+	}
+
+	static char hash_buf[8192] = {0};
+	while(true){
+		int read_status = sceIoRead(read_fd, hash_buf, sizeof(hash_buf));
+		if (read_status < 0){
+			sceIoClose(read_fd);
+			return false;
+		}
+		if (read_status == 0){
+			break;
+		}
+
+		sceKernelUtilsSha1BlockUpdate_(&ctx, (uint8_t *)hash_buf, read_status);
+	}
+	sceIoClose(read_fd);
+	memset(digest, 0, 20);
+	sceKernelUtilsSha1BlockResult_(&ctx, (uint8_t *)digest);
+
+	LOG("%s: %s: ", __func__, path);
+	for(int i = 0;i < 20;i++){
+		LOG("%02x", (uint8_t)digest[i]);
+	}
+	LOG("\n");
+
+	return true;
+}
+
+bool read_file(const char *path, char *buf, int size){
+	int read_fd = sceIoOpen(path, PSP_O_RDONLY, 0777);
+	if (read_fd < 0){
+		return false;
+	}
+
+	int read_result = sceIoRead(read_fd, buf, size);
+	if (read_result != size){
+		sceIoClose(read_fd);
+		return false;
+	}
+
+	sceIoClose(read_fd);
+	return true;
+}
+
+int sceKernelGetCompiledSdkVersion_(void);
+int sceKernelDevkitVersion_(void);
+
+int get_firmware_version_from_file(){
+	char buf[13] = {0};
+	if (!read_file("flash0:/vsh/etc/version.txt", buf, 13)){
+		LOG("%s: failed reading firmware version file\n", __func__);
+		return 0;
+	}
+
+	#define CHECK(s, r) \
+	if (memcmp(s, buf, 13) == 0){ \
+		return r; \
+	}
+
+	CHECK("release:5.00:", 0x05000010);
+	CHECK("release:5.02:", 0x05000210);
+	CHECK("release:5.03:", 0x05000310);
+	CHECK("release:5.50:", 0x05050010);
+	CHECK("release:6.20:", 0x06020010);
+	CHECK("release:6.31:", 0x06030110);
+	CHECK("release:6.35:", 0x06030510);
+	CHECK("release:6.37:", 0x06030710);
+	CHECK("release:6.39:", 0x06030910);
+	CHECK("release:6.60:", 0x06060010);
+	CHECK("release:6.61:", 0x06060110);
+
+	#undef CHECK
+
+	return 0;
+}
+
+int get_firmware_version(){
+	static int cache = -1;
+	if (cache == -1){
+		// there must be a better way right?
+		//cache = sceKernelGetCompiledSdkVersion_();
+		//cache = sceKernelDevkitVersion_();
+		cache = get_firmware_version_from_file();
+	}
+	return cache;
+}
+
+void patch_syscon(){
+	SceModule *mod = sceKernelFindModuleByName("sysconf_plugin_module");
+
+	uint32_t offset = 0;
+	int fw_version = get_firmware_version();
+	switch(fw_version){
+		case 0x05000010:
+		case 0x05000210:
+		case 0x05000310:
+			offset = 0x00026050;
+			break;
+		case 0x05050010:
+			offset = 0x000257B8;
+			break;
+		case 0x06020010:
+			offset = 0x0002BDB4;
+			break;
+		case 0x06030110:
+		case 0x06030510:
+		case 0x06030710:
+		case 0x06030810:
+		case 0x06030910:
+			offset = 0x0002C724;
+			break;
+		case 0x06060010:
+		case 0x06060110:
+			offset = 0x0002CB84;
+			break;
+	}
+
+	if (offset == 0){
+		LOG("%s: syscon patch not available for fw 0x%x\n", __func__, fw_version);
+		return;
+	}
+
+	if (mod == NULL){
+		LOG("%s: syscon not found\n", __func__);
+		return;
+	}
+
+	uint32_t location = offset + (uint32_t)mod->text_addr;
+	*(char *)location = 'C';
+	LOG("%s: syscon patched for fw 0x%x\n", __func__, fw_version);
+}
 
 SceUID sceKernelLoadModule_hooked(const char *path, int flags, SceKernelLMOption *option);
 SceUID sceKernelLoadModuleVSH_hooked(const char *path, int flags, SceKernelLMOption *option);
 void hook(char *mod_name){
 	rewrite_import_table_by_nid(mod_name, "IoFileMgrForUser", 0x109F50BC, sceIoOpen_hooked);
+	rewrite_import_table_by_nid(mod_name, "IoFileMgrForKernel", 0x109F50BC, sceIoOpen_hooked);
 	rewrite_import_table_by_nid(mod_name, "IoFileMgrForUser", 0xACE946E8, sceIoGetstat_hooked);
+	rewrite_import_table_by_nid(mod_name, "IoFileMgrForKernel", 0xACE946E8, sceIoGetstat_hooked);
+	rewrite_import_table_by_nid(mod_name, "IoFileMgrForUser", 0x810C4BC3, sceIoClose_hooked);
+	rewrite_import_table_by_nid(mod_name, "IoFileMgrForKernel", 0x810C4BC3, sceIoClose_hooked);
+	rewrite_import_table_by_nid(mod_name, "IoFileMgrForUser", 0xF27A9C51, sceIoRemove_hooked);
+	rewrite_import_table_by_nid(mod_name, "IoFileMgrForKernel", 0xF27A9C51, sceIoRemove_hooked);
+
 	rewrite_import_table_by_nid(mod_name, "ModuleMgrForUser", 0x977DE386, sceKernelLoadModule_hooked);
 	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0xD5DDAB1F, sceKernelLoadModuleVSH_hooked);
 	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0xA4370E7C, sceKernelLoadModuleVSH_hooked);
@@ -176,6 +519,9 @@ void hook(char *mod_name){
 	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0x329C89DB, sceKernelLoadModuleVSH_hooked);
 	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0x8909A807, sceKernelLoadModuleVSH_hooked);
 	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0xBDFEEC4F, sceKernelLoadModuleVSH_hooked);
+	if (strcmp(mod_name, "sysconf_plugin_module") == 0){
+		patch_syscon();
+	}
 }
 
 SceUID sceKernelLoadModule_hooked(const char *path, int flags, SceKernelLMOption *option){
@@ -214,54 +560,6 @@ void initial_hook(){
 		LOG("%s: hooking %s\n", __func__, mod_name);
 		hook(mod_name);
 	}
-}
-
-bool rm_recursive(const char *file){
-	SceIoStat file_stat;
-	int get_stat_status = sceIoGetstat(file, &file_stat);
-	if (get_stat_status < 0){
-		// assume file not found
-		return true;
-	}
-
-	if (!FIO_S_ISDIR(file_stat.st_mode)){
-		int remove_status = sceIoRemove(file);
-		if (remove_status < 0){
-			LOG("%s: failed removing file %s\n", __func__, file);
-			return false;
-		}
-		return true;
-	}
-
-	int dir_fd = sceIoDopen(file);
-	if (dir_fd < 0){
-		// uh, what
-		LOG("%s: failed opening directory %s\n", __func__, file);
-		return false;
-	}
-	SceIoDirent entry;
-	while (sceIoDread(dir_fd, &entry) > 0){
-			if (strcmp(entry.d_name, ".") == 0 || strcmp(entry.d_name, "..") == 0){
-				continue;
-			}
-			char path_buf[1024] = {0};
-			sprintf(path_buf, "%s/%s", file, entry.d_name);
-			bool rm_status = rm_recursive(path_buf);
-			if (!rm_status){
-				sceIoDclose(dir_fd);
-				return false;
-			}
-	}
-
-	sceIoDclose(dir_fd);
-
-	int dir_remove_status = sceIoRmdir(file);
-	if (dir_remove_status < 0){
-		LOG("%s: failed removing directory %s\n", __func__, file);
-		return false;
-	}
-
-	return true;
 }
 
 void mkdir_recursive(const char *dir){
@@ -327,27 +625,6 @@ struct patch_header{
 	uint32_t size;
 } __attribute__((packed));
 
-bool fd_copy(int write_fd, int read_fd, int size){
-	int bytes_written = 0;
-	while(bytes_written < size){
-		static char dump_buf[8192];
-		int rem = size - bytes_written;
-		int to_read = sizeof(dump_buf) > rem ? rem : sizeof(dump_buf);
-		int read_status = sceIoRead(read_fd, dump_buf, to_read);
-		if (read_status != to_read){
-			return false;
-		}
-		int write_status = sceIoWrite(write_fd, dump_buf, read_status);
-		if (write_status != read_status){
-			return false;
-		}
-		bytes_written += read_status;
-	}
-	return true;
-}
-
-int sceKernelGetCompiledSdkVersion_(void);
-
 bool extract_ctf(){
 	int ctf_fd = sceIoOpen(THEME_FILE, PSP_O_RDONLY, 0777);
 	if (ctf_fd < 0){
@@ -365,7 +642,7 @@ bool extract_ctf(){
 		return false;
 	}
 	// TODO maaaaybe actually check this
-	LOG("%s: theme magic is 0x%lx, your firmware is maybe 0x%x, good luck :)\n", __func__, header.magic, sceKernelGetCompiledSdkVersion_());
+	LOG("%s: theme magic is 0x%lx, your firmware is maybe 0x%x, good luck :)\n", __func__, header.magic, get_firmware_version());
 
 	if (header.header_size > ARRAY_SIZE(entries)){
 		LOG("%s: bad number of entries in ctf file\n", __func__);
@@ -449,22 +726,6 @@ bool extract_ctf(){
 	return true;
 }
 
-bool read_file(const char *path, char *buf, int size){
-	int read_fd = sceIoOpen(path, PSP_O_RDONLY, 0777);
-	if (read_fd < 0){
-		return false;
-	}
-
-	int read_result = sceIoRead(read_fd, buf, size);
-	if (read_result != size){
-		sceIoClose(read_fd);
-		return false;
-	}
-
-	sceIoClose(read_fd);
-	return true;
-}
-
 bool write_file(const char *path, const char *buf, int size){
 	int write_fd = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	if (write_fd < 0){
@@ -478,45 +739,6 @@ bool write_file(const char *path, const char *buf, int size){
 	}
 
 	sceIoClose(write_fd);
-	return true;
-}
-
-int sceKernelUtilsSha1BlockInit_(SceKernelUtilsSha1Context *ctx);
-int sceKernelUtilsSha1BlockUpdate_(SceKernelUtilsSha1Context *ctx, u8 *data, u32 size);
-int sceKernelUtilsSha1BlockResult_(SceKernelUtilsSha1Context *ctx, u8 *digest);
-
-bool hash_file(const char *path, char *digest){
-	SceKernelUtilsSha1Context ctx = {0};
-	sceKernelUtilsSha1BlockInit_(&ctx);
-
-	int read_fd = sceIoOpen(path, PSP_O_RDONLY, 0777);
-	if (read_fd < 0){
-		return false;
-	}
-
-	static char hash_buf[8192] = {0};
-	while(true){
-		int read_status = sceIoRead(read_fd, hash_buf, sizeof(hash_buf));
-		if (read_status < 0){
-			sceIoClose(read_fd);
-			return false;
-		}
-		if (read_status == 0){
-			break;
-		}
-
-		sceKernelUtilsSha1BlockUpdate_(&ctx, (uint8_t *)hash_buf, read_status);
-	}
-	sceIoClose(read_fd);
-	memset(digest, 0, 20);
-	sceKernelUtilsSha1BlockResult_(&ctx, (uint8_t *)digest);
-
-	LOG("%s: %s: ", __func__, path);
-	for(int i = 0;i < 20;i++){
-		LOG("%02x", (uint8_t)digest[i]);
-	}
-	LOG("\n");
-
 	return true;
 }
 
