@@ -339,7 +339,7 @@ uint32_t make_jump_instruction(void *to){
 bool rewrite_import_table_by_nid(char *module_name, char *library_name, uint32_t target_nid, void *function){
 	SceModule *mod = sceKernelFindModuleByName(module_name);
 	if (mod == NULL){
-		LOG("%s: module %s not found\n", __func__, library_name);
+		LOG("%s: module %s not found\n", __func__, module_name);
 		return false;
 	}
 
@@ -512,9 +512,41 @@ void patch_syscon(){
 	LOG_VERBOSE("%s: syscon patched for fw 0x%x\n", __func__, fw_version);
 }
 
+bool is_module_faked(const char *library_name){
+	static const char *fake_modules[] = {
+		// browser loading
+		"sceNet_Service",
+		"sceNet_Library",
+		"sceNetInet_Library",
+		"sceNetApctl_Library",
+		"sceNetResolver_Library",
+		"SceParseHTTPheader_Library",
+		"SceParseURI_Library",
+		"SceHttp_Library",
+		"sceSsl_Module",
+	};
+
+	for(int i = 0;i < ARRAY_SIZE(fake_modules);i++){
+		if (strcmp(fake_modules[i], library_name) == 0){
+			return true;
+		}
+	}
+	return false;
+}
+
 SceUID sceKernelLoadModule_hooked(const char *path, int flags, SceKernelLMOption *option);
 SceUID sceKernelLoadModuleVSH_hooked(const char *path, int flags, SceKernelLMOption *option);
 void hook(char *mod_name){
+	if (is_module_faked(mod_name)){
+		return;
+	}
+
+	SceModule *mod = sceKernelFindModuleByName(mod_name);
+	if (mod == NULL){
+		LOG("%s: fake module %s\n", __func__, mod_name);
+		return;
+	}
+
 	rewrite_import_table_by_nid(mod_name, "IoFileMgrForUser", 0x109F50BC, sceIoOpen_hooked);
 	rewrite_import_table_by_nid(mod_name, "IoFileMgrForKernel", 0x109F50BC, sceIoOpen_hooked);
 	rewrite_import_table_by_nid(mod_name, "IoFileMgrForUser", 0xACE946E8, sceIoGetstat_hooked);
