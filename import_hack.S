@@ -8,3 +8,6 @@ IMPORT_START "UtilsForUser",0x40090000
 IMPORT_FUNC "UtilsForUser",0xF8FCD5BA,sceKernelUtilsSha1BlockInit_
 IMPORT_FUNC "UtilsForUser",0x346F6DA8,sceKernelUtilsSha1BlockUpdate_
 IMPORT_FUNC "UtilsForUser",0x585F1C09,sceKernelUtilsSha1BlockResult_
+
+IMPORT_START "SysMemUserForUser",0x40080000
+IMPORT_FUNC "SysMemUserForUser",0xFC114573,sceKernelGetCompiledSdkVersion_

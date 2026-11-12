@@ -346,6 +346,8 @@ bool fd_copy(int write_fd, int read_fd, int size){
 	return true;
 }
 
+int sceKernelGetCompiledSdkVersion_(void);
+
 bool extract_ctf(){
 	int ctf_fd = sceIoOpen(THEME_FILE, PSP_O_RDONLY, 0777);
 	if (ctf_fd < 0){
@@ -363,7 +365,7 @@ bool extract_ctf(){
 		return false;
 	}
 	// TODO maaaaybe actually check this
-	LOG("%s: theme magic is 0x%lx, your firmware is maybe 0x%x, good luck :)\n", __func__, header.magic, sceKernelGetCompiledSdkVersion());
+	LOG("%s: theme magic is 0x%lx, your firmware is maybe 0x%x, good luck :)\n", __func__, header.magic, sceKernelGetCompiledSdkVersion_());
 
 	if (header.header_size > ARRAY_SIZE(entries)){
 		LOG("%s: bad number of entries in ctf file\n", __func__);
