@@ -539,16 +539,21 @@ void apply_patches(){
 			}
 
 			struct patch_header patch_header;
+			bool patch_failed = false;
 			while(sceIoRead(patch_fd, &patch_header, sizeof(patch_header)) == sizeof(patch_header)){
 				uint32_t location = patch_header.location + (uint32_t)mod->text_addr;
 				int read_status = sceIoRead(patch_fd, (void *)location, patch_header.size);
 				if (read_status != patch_header.size){
 					LOG("%s: patching of %s failed\n", __func__, patch_list[i].library_name);
+					patch_failed = true;
+					break;
 				}
 			}
 
 			sceIoClose(patch_fd);
-			LOG("%s: patch applied to %s\n", __func__, patch_list[i].library_name);
+			if (!patch_failed){
+				LOG("%s: patch applied to %s\n", __func__, patch_list[i].library_name);
+			}
 		}
 	}
 }
