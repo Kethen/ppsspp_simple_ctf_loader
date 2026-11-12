@@ -5,7 +5,7 @@ This is a port of https://github.com/ErikPshat/cxmb / https://github.com/PSP-Arc
 - extract ctf theme
 - overlay XMB resources from extracted ctf theme
 - hot patch scePaf_Module, sceVshCommonGui_Module and vsh_module
-- selecting themes from `<PPSSPP memory stick>/PSP/THEME` on FW 6.61
+- selecting themes from `<PPSSPP memory stick>/PSP/THEME` on FW 5.00+
 
 #### Plugin Installation
 
