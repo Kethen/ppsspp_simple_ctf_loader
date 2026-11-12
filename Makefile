@@ -1,5 +1,5 @@
 TARGET = ppsspp_simple_ctf_loader
-OBJS = main.o
+OBJS = main.o import_hack.o
 
 CFLAGS = $(CFLAGS_EXTRA) -O2 -Os -G0 -Wall -fshort-wchar -fno-pic -mno-check-zero-division -fno-builtin -DDEBUG_LOG=1
 CXXFLAGS = $(CFLAGS) -fno-exceptions -fno-rtti

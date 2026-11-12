@@ -10,11 +10,13 @@
 #include <psploadcore.h>
 #include <pspmodulemgr.h>
 #include <pspsysmem.h>
+#include <psputils.h>
 
 #define MODULE_NAME "ppsspp_simple_ctf_loader"
 #define PLUGIN_HOME "ms0:/PSP/PLUGINS/ppsspp_simple_ctf_loader"
 #define THEME_FILE PLUGIN_HOME"/theme.ctf"
 #define THEME_DIR PLUGIN_HOME"/active_theme"
+#define EXTRACTED_HASH PLUGIN_HOME"/active_theme_hash"
 
 #if DEBUG_LOG
 #define LOG_PATH PLUGIN_HOME"/log.txt"
@@ -145,18 +147,9 @@ bool rewrite_import_table_by_nid(char *module_name, char *library_name, uint32_t
 
 }
 
-SceUID sceKernelLoadModule_hooked(const char *path, int flags, SceKernelLMOption *option){
-	char overlay_path[256] = {0};
-	overlay(path, overlay_path);
-	return sceKernelLoadModule(overlay_path, flags, option);
-}
 
-SceUID sceKernelLoadModuleVSH_hooked(const char *path, int flags, SceKernelLMOption *option){
-	char overlay_path[256] = {0};
-	overlay(path, overlay_path);
-	return sceKernelLoadModule(overlay_path, flags, option);
-}
-
+SceUID sceKernelLoadModule_hooked(const char *path, int flags, SceKernelLMOption *option);
+SceUID sceKernelLoadModuleVSH_hooked(const char *path, int flags, SceKernelLMOption *option);
 void hook(char *mod_name){
 	rewrite_import_table_by_nid(mod_name, "IoFileMgrForUser", 0x109F50BC, sceIoOpen_hooked);
 	rewrite_import_table_by_nid(mod_name, "IoFileMgrForUser", 0xACE946E8, sceIoGetstat_hooked);
@@ -168,6 +161,26 @@ void hook(char *mod_name){
 	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0x329C89DB, sceKernelLoadModuleVSH_hooked);
 	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0x8909A807, sceKernelLoadModuleVSH_hooked);
 	rewrite_import_table_by_nid(mod_name, "ModuleMgrForKernel", 0xBDFEEC4F, sceKernelLoadModuleVSH_hooked);
+}
+
+SceUID sceKernelLoadModule_hooked(const char *path, int flags, SceKernelLMOption *option){
+	char overlay_path[256] = {0};
+	overlay(path, overlay_path);
+	int mod_id = sceKernelLoadModule(overlay_path, flags, option);
+	if (mod_id >= 0){
+		SceKernelModuleInfo mod_info = {0};
+		mod_info.size = sizeof(mod_info);
+		sceKernelQueryModuleInfo(mod_id, &mod_info);
+		char mod_name[sizeof(mod_info.name) + 1] = {0};
+		memcpy(mod_name, mod_info.name, sizeof(mod_info.name));
+		LOG("%s: hooking %s\n", __func__, mod_name);
+		hook(mod_name);
+	}
+	return mod_id;
+}
+
+SceUID sceKernelLoadModuleVSH_hooked(const char *path, int flags, SceKernelLMOption *option){
+	return sceKernelLoadModule_hooked(path, flags, option);
 }
 
 void initial_hook(){
@@ -189,6 +202,7 @@ void initial_hook(){
 }
 
 bool rm_recursive(const char *file){
+	LOG("%s: wdf\n", __func__);
 	SceIoStat file_stat;
 	int get_stat_status = sceIoGetstat(file, &file_stat);
 	if (get_stat_status < 0){
@@ -416,6 +430,97 @@ bool extract_ctf(){
 	return true;
 }
 
+bool read_file(const char *path, char *buf, int size){
+	int read_fd = sceIoOpen(path, PSP_O_RDONLY, 0777);
+	if (read_fd < 0){
+		return false;
+	}
+
+	int read_result = sceIoRead(read_fd, buf, size);
+	if (read_result != size){
+		sceIoClose(read_fd);
+		return false;
+	}
+
+	sceIoClose(read_fd);
+	return true;
+}
+
+bool write_file(const char *path, const char *buf, int size){
+	int write_fd = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	if (write_fd < 0){
+		return false;
+	}
+
+	int write_result = sceIoWrite(write_fd, buf, size);
+	if (write_result != size){
+		sceIoClose(write_fd);
+		return false;
+	}
+
+	sceIoClose(write_fd);
+	return true;
+}
+
+int sceKernelUtilsSha1BlockInit_(SceKernelUtilsSha1Context *ctx);
+int sceKernelUtilsSha1BlockUpdate_(SceKernelUtilsSha1Context *ctx, u8 *data, u32 size);
+int sceKernelUtilsSha1BlockResult_(SceKernelUtilsSha1Context *ctx, u8 *digest);
+
+bool hash_file(const char *path, char *digest){
+	SceKernelUtilsSha1Context ctx = {0};
+	sceKernelUtilsSha1BlockInit_(&ctx);
+
+	int read_fd = sceIoOpen(path, PSP_O_RDONLY, 0777);
+	if (read_fd < 0){
+		return false;
+	}
+
+	static char hash_buf[8192] = {0};
+	while(true){
+		int read_status = sceIoRead(read_fd, hash_buf, sizeof(hash_buf));
+		if (read_status < 0){
+			sceIoClose(read_fd);
+			return false;
+		}
+		if (read_status == 0){
+			break;
+		}
+
+		sceKernelUtilsSha1BlockUpdate_(&ctx, (uint8_t *)hash_buf, read_status);
+	}
+	sceIoClose(read_fd);
+	memset(digest, 0, 20);
+	sceKernelUtilsSha1BlockResult_(&ctx, (uint8_t *)digest);
+
+	LOG("%s: %s: ", __func__, path);
+	for(int i = 0;i < 20;i++){
+		LOG("%02x", (uint8_t)digest[i]);
+	}
+	LOG("\n");
+
+	return true;
+}
+
+bool is_hash_same(){
+	if(!is_file(EXTRACTED_HASH)){
+		return false;
+	}
+
+	char existing_hash[20];
+	if (!read_file(EXTRACTED_HASH, existing_hash, sizeof(existing_hash))){
+		return false;
+	}
+
+	char cur_hash[20];
+	if (!hash_file(THEME_FILE, cur_hash)){
+		return false;
+	}
+	if (memcmp(cur_hash, existing_hash, 20) != 0){
+		return false;
+	}
+	return true;
+}
+
 void apply_patches(){
 	for (int i = 0;i < ARRAY_SIZE(patch_list);i++){
 		char patch_path[256] = {0};
@@ -454,7 +559,25 @@ int module_start(SceSize args, void *argp){
 	#endif
 	LOG("%s: module started\n", __func__);
 
-	extract_ctf();
+	if (!is_file(THEME_FILE)){
+		sceIoRemove(EXTRACTED_HASH);
+	} else {
+		if (!is_hash_same()){
+			LOG("%s: hash changed, extracting ctf again\n", __func__);
+			if (!extract_ctf()){
+				rm_recursive(THEME_DIR);
+			} else {
+				char new_digest[20];
+				if (!hash_file(THEME_FILE, new_digest)){
+					LOG("%s: failed creating file hash for newly extracted ctf\n", __func__);
+				} else {
+					if (!write_file(EXTRACTED_HASH, new_digest, 20)){
+						LOG("%s: failed writing hash for newly extracted ctf\n", __func__);
+					}
+				}
+			}
+		}
+	}
 
 	apply_patches();
 
