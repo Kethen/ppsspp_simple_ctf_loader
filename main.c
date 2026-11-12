@@ -21,6 +21,9 @@
 #define EXTRACTED_HASH PLUGIN_HOME"/active_theme_hash"
 
 #if DEBUG_LOG
+
+#define VERBOSE 0
+
 #define LOG_PATH PLUGIN_HOME"/log.txt"
 #define LOG(...) { \
 	char _log_buf[1024] = {0}; \
@@ -31,8 +34,18 @@
 		sceIoClose(_log_fd); \
 	} \
 }
+
+#if VERBOSE
+#define LOG_VERBOSE(...) LOG(__VA_ARGS__)
 #else
+#define LOG_VERBOSE(...)
+#endif
+
+#else
+
 #define LOG(...)
+#define LOG_VERBOSE(...)
+
 #endif
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(a[0]))
@@ -114,7 +127,7 @@ void overlay(const char *path, char *out_path){
 		return;
 	}
 
-	LOG("%s: %s -> %s\n", __func__, path, possible_path);
+	LOG_VERBOSE("%s: %s -> %s\n", __func__, path, possible_path);
 
 	strcpy(out_path, possible_path);
 	return;
@@ -129,7 +142,7 @@ SceUID sceIoOpen_hooked(const char *file, int flags, SceMode mode){
 
 	SceUID ret = sceIoOpen(overlay_path, flags, mode);
 
-	//LOG("%s: %s, 0x%x\n", __func__, file, ret);
+	LOG_VERBOSE("%s: %s, 0x%x\n", __func__, file, ret);
 
 	if (ret < 0){
 		return ret;
@@ -144,7 +157,7 @@ SceUID sceIoOpen_hooked(const char *file, int flags, SceMode mode){
 
 int vsh_reboot_thread_func(SceSize args, void *argp){
 	sceKernelDelayThread(3650000);
-	LOG("%s: rebooting vsh\n", __func__);
+	LOG_VERBOSE("%s: rebooting vsh\n", __func__);
 	sceKernelExitVSHVSH(NULL);
 	return 0;
 }
@@ -210,14 +223,14 @@ int sceIoClose_hooked(int fd){
 			schedule_vsh_reboot();
 		}
 	}
-	//LOG("%s: %d\n", __func__, fd);
+	LOG_VERBOSE("%s: %d\n", __func__, fd);
 	return ret;
 }
 
 int sceIoGetstat_hooked(const char *file, SceIoStat *stat){
 	char overlay_path[256] = {0};
 	overlay(file, overlay_path);
-	//LOG("%s: %s\n", __func__, file);
+	LOG_VERBOSE("%s: %s\n", __func__, file);
 
 	int ret = sceIoGetstat(overlay_path, stat);
 
@@ -251,7 +264,7 @@ int sceIoGetstat_hooked(const char *file, SceIoStat *stat){
 			}else{
 				stat->st_size = 0x00020000;
 			}
-			LOG("%s: faking ctf size as %d\n", __func__, (int)stat->st_size);
+			LOG_VERBOSE("%s: faking ctf size as %d\n", __func__, (int)stat->st_size);
 		}
 	}
 
@@ -315,7 +328,7 @@ int sceIoRemove_hooked(const char *file){
 		schedule_vsh_reboot();
 	}
 
-	LOG("%s: %s, 0x%x\n", __func__, file, ret);
+	LOG_VERBOSE("%s: %s, 0x%x\n", __func__, file, ret);
 	return ret;
 }
 
@@ -341,7 +354,7 @@ bool rewrite_import_table_by_nid(char *module_name, char *library_name, uint32_t
 					nid[0] = 0;
 					stub[0] = make_jump_instruction(function);
 					stub[1] = 0; // nop
-					LOG("%s: hooking %s 's %s 0x%lx\n", __func__, module_name, library_name, target_nid);
+					LOG_VERBOSE("%s: hooking %s 's %s 0x%lx\n", __func__, module_name, library_name, target_nid);
 					return true;
 				}
 			}
@@ -350,7 +363,7 @@ bool rewrite_import_table_by_nid(char *module_name, char *library_name, uint32_t
 		library = (SceLibraryStubTable *)((uint32_t)library + library->len * 4);
 	}
 
-	//LOG("%s: module %s did not import %s 0x%lx\n", __func__, module_name, library_name, target_nid);
+	LOG_VERBOSE("%s: module %s did not import %s 0x%lx\n", __func__, module_name, library_name, target_nid);
 
 	return false;
 
@@ -386,11 +399,11 @@ bool hash_file(const char *path, char *digest){
 	memset(digest, 0, 20);
 	sceKernelUtilsSha1BlockResult_(&ctx, (uint8_t *)digest);
 
-	LOG("%s: %s: ", __func__, path);
+	LOG_VERBOSE("%s: %s: ", __func__, path);
 	for(int i = 0;i < 20;i++){
-		LOG("%02x", (uint8_t)digest[i]);
+		LOG_VERBOSE("%02x", (uint8_t)digest[i]);
 	}
-	LOG("\n");
+	LOG_VERBOSE("\n");
 
 	return true;
 }
@@ -496,7 +509,7 @@ void patch_syscon(){
 
 	uint32_t location = offset + (uint32_t)mod->text_addr;
 	*(char *)location = 'C';
-	LOG("%s: syscon patched for fw 0x%x\n", __func__, fw_version);
+	LOG_VERBOSE("%s: syscon patched for fw 0x%x\n", __func__, fw_version);
 }
 
 SceUID sceKernelLoadModule_hooked(const char *path, int flags, SceKernelLMOption *option);
@@ -534,7 +547,7 @@ SceUID sceKernelLoadModule_hooked(const char *path, int flags, SceKernelLMOption
 		sceKernelQueryModuleInfo(mod_id, &mod_info);
 		char mod_name[sizeof(mod_info.name) + 1] = {0};
 		memcpy(mod_name, mod_info.name, sizeof(mod_info.name));
-		LOG("%s: hooking %s\n", __func__, mod_name);
+		LOG_VERBOSE("%s: hooking %s\n", __func__, mod_name);
 		hook(mod_name);
 	}
 	return mod_id;
@@ -557,7 +570,7 @@ void initial_hook(){
 		if (strcmp(MODULE_NAME, mod_name) == 0){
 			continue;
 		}
-		LOG("%s: hooking %s\n", __func__, mod_name);
+		LOG_VERBOSE("%s: hooking %s\n", __func__, mod_name);
 		hook(mod_name);
 	}
 }
@@ -667,7 +680,7 @@ bool extract_ctf(){
 	}
 
 	for (int i = 0;i < header.header_size;i++){
-		LOG("%s: replace entry %s at 0x%x size %d\n", __func__, entries[i].name, entries[i].start, entries[i].size);
+		LOG_VERBOSE("%s: replace entry %s at 0x%x size %d\n", __func__, entries[i].name, entries[i].start, entries[i].size);
 		char out_path[256] = {0};
 		sprintf(out_path, "%s%s", THEME_DIR, entries[i].name);
 		char out_dirname[256] = {0};
@@ -793,7 +806,7 @@ void apply_patches(){
 
 			sceIoClose(patch_fd);
 			if (!patch_failed){
-				LOG("%s: patch applied to %s\n", __func__, patch_list[i].library_name);
+				LOG_VERBOSE("%s: patch applied to %s\n", __func__, patch_list[i].library_name);
 			}
 		}
 	}
@@ -809,7 +822,7 @@ int module_start(SceSize args, void *argp){
 		sceIoRemove(EXTRACTED_HASH);
 	} else {
 		if (!is_hash_same() || !is_dir(THEME_DIR)){
-			LOG("%s: hash changed, extracting ctf again\n", __func__);
+			LOG_VERBOSE("%s: hash changed, extracting ctf again\n", __func__);
 			if (!extract_ctf()){
 				rm_recursive(THEME_DIR);
 			} else {
