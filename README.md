@@ -1,5 +1,8 @@
 ### ppsspp_simple_ctf_loader
 
+<img width="600"  alt="image" src="https://github.com/user-attachments/assets/12c6c671-1001-44c1-8f81-ba1d9650fb6a" />
+
+
 This is a port of https://github.com/ErikPshat/cxmb / https://github.com/PSP-Archive/CXMB for PPSSPP's XMB mode, it implements the following features:
 
 - extract ctf theme
