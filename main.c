@@ -48,6 +48,21 @@ PSP_MODULE_INFO(MODULE_NAME, PSP_MODULE_KERNEL, 1, 0);
  *   - ppsspp also requires no i/d cache invalidation
  */
 
+bool is_dir(const char *path){
+	SceIoStat file_stat = {0};
+	int get_stat_status = sceIoGetstat(path, &file_stat);
+
+	if (get_stat_status < 0){
+		return false;
+	}
+
+	if (!FIO_S_ISDIR(file_stat.st_mode)){
+		return false;
+	}
+
+	return true;
+}
+
 bool is_file(const char *path){
 	SceIoStat file_stat = {0};
 	int get_stat_status = sceIoGetstat(path, &file_stat);
@@ -567,7 +582,7 @@ int module_start(SceSize args, void *argp){
 	if (!is_file(THEME_FILE)){
 		sceIoRemove(EXTRACTED_HASH);
 	} else {
-		if (!is_hash_same()){
+		if (!is_hash_same() || !is_dir(THEME_DIR)){
 			LOG("%s: hash changed, extracting ctf again\n", __func__);
 			if (!extract_ctf()){
 				rm_recursive(THEME_DIR);
