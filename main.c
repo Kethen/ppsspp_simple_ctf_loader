@@ -204,7 +204,7 @@ bool copy_file(const char *to, const char *from){
 
 int sceIoClose_hooked(int fd){
 	int ret = sceIoClose(fd);
-	if (fd == custom_theme_dat_fd){
+	if (fd != -1 && fd == custom_theme_dat_fd){
 		custom_theme_dat_fd = -1;
 		if(copy_file(THEME_FILE, selected_ctf_path)){
 			schedule_vsh_reboot();
