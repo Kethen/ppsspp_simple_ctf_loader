@@ -1,0 +1,34 @@
+name: Build package
+
+on: [ push, pull_request, workflow_dispatch ]
+
+jobs:
+  build_pkg:
+    runs-on: ubuntu-24.04
+    steps:
+
+    - name: Checkout
+      uses: actions/checkout@v5
+      with:
+        submodules: true
+
+    - name: Set env vars
+      run: |
+        echo "sha_name=$(echo ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_ENV
+        echo "PSPDEV_TAG=ghcr.io/pspdev/pspdev:v20260201" >> $GITHUB_ENV
+
+    - name: Build
+      run: |
+        docker run --rm -i -v ./:/work_dir -w /work_dir "$PSPDEV_TAG" make
+        mkdir -p PSP/PLUGINS/ppsspp_simple_ctf_loader
+        cp plugin.ini ppsspp_simple_ctf_loader.prx PSP/PLUGINS/ppsspp_simple_ctf_loader
+
+    - name: Push package artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ppsspp_simple_ctf_loader_${{ env.sha_name }}
+        path: |
+           LICENSE
+           PSP/PLUGINS/ppsspp_simple_ctf_loader/plugin.ini
+           PSP/PLUGINS/ppsspp_simple_ctf_loader/ppsspp_simple_ctf_loader.prx
+        if-no-files-found: error
