@@ -217,7 +217,6 @@ void initial_hook(){
 }
 
 bool rm_recursive(const char *file){
-	LOG("%s: wdf\n", __func__);
 	SceIoStat file_stat;
 	int get_stat_status = sceIoGetstat(file, &file_stat);
 	if (get_stat_status < 0){
@@ -368,6 +367,7 @@ bool extract_ctf(){
 
 	if (header.header_size > ARRAY_SIZE(entries)){
 		LOG("%s: bad number of entries in ctf file\n", __func__);
+		sceIoClose(ctf_fd);
 		return false;
 	}
 
@@ -377,11 +377,13 @@ bool extract_ctf(){
 	bytes_read = sceIoRead(ctf_fd, entries, entries_bytes);
 	if (bytes_read != entries_bytes){
 		LOG("%s: bad ctf file while reading replacement entries\n", __func__);
+		sceIoClose(ctf_fd);
 		return false;
 	}
 
 	// clean previous theme
 	if (!rm_recursive(THEME_DIR)){
+		sceIoClose(ctf_fd);
 		return false;
 	}
 
@@ -424,11 +426,11 @@ bool extract_ctf(){
 					}
 				}
 
-				sceIoClose(out_file_fd);
 				break;
 			}
 		}
 		if (is_patch){
+			sceIoClose(out_file_fd);
 			continue;
 		}
 
