@@ -22,13 +22,17 @@ jobs:
         docker run --rm -i -v ./:/work_dir -w /work_dir "$PSPDEV_TAG" make
         mkdir -p PSP/PLUGINS/ppsspp_simple_ctf_loader
         cp plugin.ini ppsspp_simple_ctf_loader.prx PSP/PLUGINS/ppsspp_simple_ctf_loader
+        cp theme_sample/CustomXMBwhite.660.ctf PSP/PLUGINS/ppsspp_simple_ctf_loader/theme.ctf
 
     - name: Push package artifact
       uses: actions/upload-artifact@v4
       with:
         name: ppsspp_simple_ctf_loader_${{ env.sha_name }}
         path: |
+           theme_sample/CustomXMBwhite.660.ctf
+           theme_sample/SOURCES.txt
            LICENSE
            PSP/PLUGINS/ppsspp_simple_ctf_loader/plugin.ini
            PSP/PLUGINS/ppsspp_simple_ctf_loader/ppsspp_simple_ctf_loader.prx
+           PSP/PLUGINS/ppsspp_simple_ctf_loader/theme.ctf
         if-no-files-found: error
