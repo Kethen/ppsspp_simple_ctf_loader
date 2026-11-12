@@ -1,1 +1,2 @@
 CustomXMBwhite.660.ctf https://www.pspunk.com/psp-themes/
+Clear XMB Black.ctf https://github.com/Shenron0/PSP-Themes/tree/master

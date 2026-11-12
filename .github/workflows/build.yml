@@ -29,10 +29,7 @@ jobs:
       with:
         name: ppsspp_simple_ctf_loader_${{ env.sha_name }}
         path: |
-           theme_sample/CustomXMBwhite.660.ctf
-           theme_sample/SOURCES.txt
+           theme_sample
            LICENSE
-           PSP/PLUGINS/ppsspp_simple_ctf_loader/plugin.ini
-           PSP/PLUGINS/ppsspp_simple_ctf_loader/ppsspp_simple_ctf_loader.prx
-           PSP/PLUGINS/ppsspp_simple_ctf_loader/theme.ctf
+           PSP/PLUGINS/ppsspp_simple_ctf_loader
         if-no-files-found: error
