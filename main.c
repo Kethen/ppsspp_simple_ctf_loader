@@ -130,7 +130,7 @@ bool rewrite_import_table_by_nid(char *module_name, char *library_name, uint32_t
 					nid[0] = 0;
 					stub[0] = make_jump_instruction(function);
 					stub[1] = 0; // nop
-					LOG("%s: hooking %s 's %s 0x%lx", __func__, module_name, library_name, target_nid);
+					LOG("%s: hooking %s 's %s 0x%lx\n", __func__, module_name, library_name, target_nid);
 					return true;
 				}
 			}
