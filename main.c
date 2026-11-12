@@ -43,6 +43,7 @@ PSP_MODULE_INFO(MODULE_NAME, PSP_MODULE_KERNEL, 1, 0);
  *   2. if the hash is changed, extract the theme file to PLUGIN_HOME/active_theme
  *   3. use ms0:/PSP/PLUGINS/ppsspp_simple_ctf_loader/active_theme as an overlay
  *   - makes very good use of the fact that PPSSPP ignore kernel/user boundary, beware when studying this for console plugins
+ *   - ppsspp also requires no i/d cache invalidation
  */
 
 bool is_file(const char *path){
@@ -273,6 +274,50 @@ struct ctf_header{
 	uint32_t header_size;
 } __attribute__((packed));
 
+struct patch_list_entry{
+	const char *library_name;
+	const char *patch_path;
+};
+
+struct patch_list_entry patch_list[] = {
+	{
+		.library_name = "scePaf_Module",
+		.patch_path = "/vsh/module/paf.prx"
+	},
+	{
+		.library_name = "sceVshCommonGui_Module",
+		.patch_path = "/vsh/module/common_gui.prx"
+	},
+	{
+		.library_name = "vsh_module",
+		.patch_path = "/vsh/module/vshmain.prx"
+	}
+};
+
+struct patch_header{
+	uint32_t location;
+	uint32_t size;
+} __attribute__((packed));
+
+bool fd_copy(int write_fd, int read_fd, int size){
+	int bytes_written = 0;
+	while(bytes_written < size){
+		static char dump_buf[8192];
+		int rem = size - bytes_written;
+		int to_read = sizeof(dump_buf) > rem ? rem : sizeof(dump_buf);
+		int read_status = sceIoRead(read_fd, dump_buf, to_read);
+		if (read_status != to_read){
+			return false;
+		}
+		int write_status = sceIoWrite(write_fd, dump_buf, read_status);
+		if (write_status != read_status){
+			return false;
+		}
+		bytes_written += read_status;
+	}
+	return true;
+}
+
 bool extract_ctf(){
 	int ctf_fd = sceIoOpen(THEME_FILE, PSP_O_RDONLY, 0777);
 	if (ctf_fd < 0){
@@ -325,25 +370,44 @@ bool extract_ctf(){
 			return false;
 		}
 
-		int bytes_written = 0;
 		sceIoLseek(ctf_fd, entries[i].start, PSP_SEEK_SET);
-		while(bytes_written < entries[i].size){
-			static char dump_buf[8192];
-			int read_status = sceIoRead(ctf_fd, dump_buf, sizeof(dump_buf));
-			if (read_status <= 0){
-				LOG("%s: failed reading entry %s, 0x%x\n", __func__, entries[i].name, read_status);
-				sceIoClose(ctf_fd);
+
+		bool is_patch = false;
+		for (int j = 0;j < ARRAY_SIZE(patch_list);j++){
+			if (strcmp(entries[i].name, patch_list[j].patch_path) == 0){
+				is_patch = true;
+				// it is a patch, the size in the header means something else
+				for (int k = 0;k < entries[i].size;k++){
+					struct patch_header patch_header;
+					int read_status = sceIoRead(ctf_fd, &patch_header, sizeof(patch_header));
+					if (read_status != sizeof(patch_header)){
+						LOG("%s: failed reading patch %s for writing\n", __func__, patch_list[j].patch_path);
+						sceIoClose(ctf_fd);
+						sceIoClose(out_file_fd);
+						return false;
+					}
+					sceIoLseek(ctf_fd, sizeof(patch_header) * -1, PSP_SEEK_CUR);
+					if (!fd_copy(out_file_fd, ctf_fd, sizeof(patch_header) + patch_header.size)){
+						LOG("%s: failed copying patch %s\n", __func__, entries[i].name);
+						sceIoClose(ctf_fd);
+						sceIoClose(out_file_fd);
+						return false;
+					}
+				}
+
 				sceIoClose(out_file_fd);
-				return false;
+				break;
 			}
-			int write_status = sceIoWrite(out_file_fd, dump_buf, read_status);
-			if (write_status != read_status){
-				LOG("%s: failed writing entry %s, 0x%x\n", __func__, entries[i].name, write_status);
-				sceIoClose(ctf_fd);
-				sceIoClose(out_file_fd);
-				return false;
-			}
-			bytes_written += read_status;
+		}
+		if (is_patch){
+			continue;
+		}
+
+		if (!fd_copy(out_file_fd, ctf_fd, entries[i].size)){
+			LOG("%s: failed copying file %s\n", __func__, entries[i].name);
+			sceIoClose(ctf_fd);
+			sceIoClose(out_file_fd);
+			return false;
 		}
 		sceIoClose(out_file_fd);
 	}
@@ -352,10 +416,38 @@ bool extract_ctf(){
 	return true;
 }
 
-struct module_replacement{
-	const char *library_name;
-	const char *replacement_path;
-};
+void apply_patches(){
+	for (int i = 0;i < ARRAY_SIZE(patch_list);i++){
+		char patch_path[256] = {0};
+		sprintf(patch_path, "%s%s", THEME_DIR, patch_list[i].patch_path);
+		if (is_file(patch_path)){
+			SceModule *mod = sceKernelFindModuleByName(patch_list[i].library_name);
+			if (mod == NULL){
+				LOG("%s: %s not found, huh\n", __func__, patch_list[i].library_name);
+				continue;
+			}
+
+			int patch_fd = sceIoOpen(patch_path, PSP_O_RDONLY, 0777);
+			if (patch_fd < 0){
+				LOG("%s: failed opening patch file %s\n", __func__, patch_path);
+				continue;
+			}
+
+			struct patch_header patch_header;
+			while(sceIoRead(patch_fd, &patch_header, sizeof(patch_header)) == sizeof(patch_header)){
+				uint32_t location = patch_header.location + (uint32_t)mod->text_addr;
+				int read_status = sceIoRead(patch_fd, (void *)location, patch_header.size);
+				LOG("%s: writing %lu to 0x%lx\n", __func__, patch_header.size, patch_header.location);
+				if (read_status != patch_header.size){
+					LOG("%s: patching of %s failed\n", __func__, patch_list[i].library_name);
+				}
+			}
+
+			sceIoClose(patch_fd);
+			LOG("%s: patch applied to %s\n", __func__, patch_list[i].library_name);
+		}
+	}
+}
 
 int module_start(SceSize args, void *argp){
 	#if DEBUG_LOG
@@ -364,6 +456,8 @@ int module_start(SceSize args, void *argp){
 	LOG("%s: module started\n", __func__);
 
 	extract_ctf();
+
+	apply_patches();
 
 	initial_hook();
 
