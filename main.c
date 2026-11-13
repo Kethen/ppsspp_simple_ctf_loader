@@ -512,7 +512,7 @@ void patch_syscon(){
 	LOG_VERBOSE("%s: syscon patched for fw 0x%x\n", __func__, fw_version);
 }
 
-bool is_module_faked(const char *library_name){
+bool is_module_faked(const char *module_name){
 	static const char *fake_modules[] = {
 		// browser loading
 		"sceNet_Service",
@@ -527,7 +527,7 @@ bool is_module_faked(const char *library_name){
 	};
 
 	for(int i = 0;i < ARRAY_SIZE(fake_modules);i++){
-		if (strcmp(fake_modules[i], library_name) == 0){
+		if (strcmp(fake_modules[i], module_name) == 0){
 			return true;
 		}
 	}
